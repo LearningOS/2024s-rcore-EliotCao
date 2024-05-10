@@ -14,6 +14,8 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::timer::get_time_ms;
+use crate::mm::{MapPermission, VirtAddr};
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
@@ -79,6 +81,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.set_time_on_first_schedule();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +143,7 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            inner.tasks[next].set_time_on_first_schedule();
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +156,52 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// Add task's syscall times.
+    fn add_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[syscall_id] += 1;
+    }
+
+    /// Get task status.
+    fn get_task_status(&self) -> TaskStatus {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_status
+    }
+
+    /// Get syscall times.
+    fn get_syscall_times(&self) -> [u32; crate::config::MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times
+    }
+
+    /// Get running time.
+    pub fn get_running_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        // inner.tasks[current].start_time
+        get_time_ms() - inner.tasks[current].start_time
+    }
+
+    /// Map virtual page to physical page
+    fn mmap(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let memset = &mut inner.tasks[current].memory_set;
+        memset.mmap(start, end, permission)
+        // 0
+    }
+
+    /// Unmap virtual page
+    fn munmap(&self, start: VirtAddr, end: VirtAddr) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let memset = &mut inner.tasks[current].memory_set;
+        memset.unmap(start, end)
     }
 }
 
@@ -196,6 +246,36 @@ pub fn current_user_token() -> usize {
 /// Get the current 'Running' task's trap contexts.
 pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
+}
+
+/// Add syscall times.
+pub fn add_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_times(syscall_id);
+}
+
+/// Get task status.
+pub fn get_task_status() -> TaskStatus {
+    TASK_MANAGER.get_task_status()
+}
+
+/// Get syscall times.
+pub fn get_syscall_times() -> [u32; crate::config::MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// Get running time.
+pub fn get_running_time() -> usize {
+    TASK_MANAGER.get_running_time()
+}
+
+/// Map virtual page to physical page
+pub fn mmap(start: VirtAddr, end: VirtAddr, permission: MapPermission) -> isize {
+    TASK_MANAGER.mmap(start, end, permission)
+}
+
+/// Unmap virtual page
+pub fn munmap(start: VirtAddr, end: VirtAddr) -> isize {
+    TASK_MANAGER.munmap(start, end)
 }
 
 /// Change the current 'Running' task's program break

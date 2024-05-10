@@ -1,6 +1,7 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::timer::get_time_ms;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
@@ -28,6 +29,13 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+    /// Start running time of task
+    pub start_time: usize,
+    /// Whether the task has already been dispatched
+    pub scheduled: bool
 }
 
 impl TaskControlBlock {
@@ -63,6 +71,9 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            start_time: 0,
+            scheduled: false
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -94,6 +105,14 @@ impl TaskControlBlock {
             Some(old_break)
         } else {
             None
+        }
+    }
+
+    /// Set the timestamp to now if it's the first to be dispatched
+    pub fn set_time_on_first_schedule(&mut self) {
+        if !self.scheduled {
+            self.start_time = get_time_ms();
+            self.scheduled = true;
         }
     }
 }
