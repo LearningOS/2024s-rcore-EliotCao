@@ -300,6 +300,32 @@ impl MemorySet {
             false
         }
     }
+    
+    /// map an area [start, end)
+    pub fn mmap(&mut self, start: VirtAddr, end:VirtAddr, permission: MapPermission) -> isize {
+        let is_allocated = self.areas.iter().any(|area| {
+            area.vpn_range.get_end() > start.floor()
+                && area.vpn_range.get_start() < end.ceil()
+        });
+        if is_allocated {
+            return -1;
+        }
+        self.insert_framed_area(start, end, permission);
+        0
+    }
+
+    /// unmap an area [start, end)
+    pub fn unmap(&mut self, start:VirtAddr, end:VirtAddr) -> isize {
+        let index = self.areas.iter_mut().position(|map| {
+            map.vpn_range.get_start() == start.floor()
+                && map.vpn_range.get_end() == end.ceil()
+        });
+        if let Some(index) = index {
+            self.areas[index].unmap(&mut self.page_table);
+            self.areas.remove(index);
+        }
+        0
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

@@ -1,8 +1,9 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{TRAP_CONTEXT_BASE, MAX_SYSCALL_NUM};
+use crate::timer::get_time_ms;
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE, MapPermission};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -68,6 +69,21 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Start running time of task
+    pub start_time: usize,
+
+    /// Whether the task has already been dispatched
+    pub scheduled: bool,
+
+    /// priority
+    pub priority: isize,
+
+    /// stride
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -84,6 +100,13 @@ impl TaskControlBlockInner {
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    /// Set the timestamp to now if it's the first to be dispatched
+    pub fn set_time_on_first_schedule(&mut self) {
+        if !self.scheduled {
+            self.start_time = get_time_ms();
+            self.scheduled = true;
+        }
     }
 }
 
@@ -118,6 +141,11 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time: 0,
+                    scheduled: false,
+                    priority: 0,
+                    stride: 0,
                 })
             },
         };
@@ -191,6 +219,11 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time: 0,
+                    scheduled: false,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                 })
             },
         });
@@ -235,6 +268,56 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Add task's syscall times.
+    pub fn add_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        inner.syscall_times[syscall_id] += 1;
+    }
+
+    /// Get task status.
+    pub fn get_task_status(&self) -> TaskStatus {
+        let inner = self.inner.exclusive_access();
+        inner.task_status
+    }
+
+    /// Get syscall times.
+    pub fn get_syscall_times(&self) -> [u32; crate::config::MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        inner.syscall_times
+    }
+
+    /// Get running time.
+    pub fn get_running_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        get_time_ms() - inner.start_time
+    }
+
+    /// Map virtual page to physical page
+    pub fn mmap(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let memset = &mut inner.memory_set;
+        memset.mmap(start, end, permission)
+    }
+
+    /// Unmap virtual page
+    pub fn munmap(&self, start: VirtAddr, end: VirtAddr) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let memset = &mut inner.memory_set;
+        memset.unmap(start, end)
+    }
+
+     /// spawn a new process
+     pub fn spawn(&self, elf_data: &[u8]) -> Arc<Self> {
+        let tcb = Arc::from(TaskControlBlock::new(elf_data));
+        self.inner_exclusive_access().children.push(tcb.clone());
+        tcb
+    }
+
+    /// Set priority
+    pub fn set_priority(&self, prio: isize) {
+        self.inner_exclusive_access().priority = prio;
     }
 }
 
